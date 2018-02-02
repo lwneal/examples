@@ -148,7 +148,7 @@ class _netD(nn.Module):
     def __init__(self, ngpu):
         super(_netD, self).__init__()
         self.ngpu = ngpu
-        self.main = nn.Sequential(
+        self.head = nn.Sequential(
             # input is (nc) x 64 x 64
             nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
@@ -165,17 +165,19 @@ class _netD(nn.Module):
             nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*8) x 4 x 4
+        )
+        self.tail = nn.Sequential(
             nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
         )
 
-    def forward(self, input):
-        if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-            output = nn.parallel.data_parallel(self.main, input, range(self.ngpu))
-        else:
-            output = self.main(input)
-
-        return output.view(-1, 1).squeeze(1)
+    def forward(self, x, return_features=False):
+        x = self.head(x)
+        if return_features:
+            # Features: batch_size x 8192
+            return x.view(x.shape[0], -1)
+        x = self.tail(x)
+        return x.view(-1, 1).squeeze(1)
 
 
 netD = _netD(ngpu)
@@ -250,9 +252,34 @@ for epoch in range(opt.niter):
         D_G_z2 = output.data.mean()
         optimizerG.step()
 
-        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+        ############################
+        # (3) Feature Matching and Repelling Regularizer (Pull-Away Term)
+        ###########################
+        FM_WEIGHT = 0
+        PT_WEIGHT = 1 / (8192*64)
+        netG.zero_grad()
+
+        # Feature Matching: Average of one batch of real vs. generated
+        # From https://arxiv.org/pdf/1606.03498.pdf
+        features_real = netD(Variable(input), return_features=True)
+        features_gen = netD(netG(Variable(noise)), return_features=True)
+        fm_loss = FM_WEIGHT * torch.mean((features_real.mean(0) - features_gen.mean(0)) ** 2)
+        fm_loss.backward(retain_graph=True)
+
+        # Pull-away term from https://github.com/kimiyoung/ssl_bad_gan
+        # https://arxiv.org/pdf/1609.03126.pdf
+        batch_size = features_gen.size(0)
+        denom = features_gen.norm(dim=0).expand_as(features_gen)
+        gen_feat_norm = features_gen / denom
+        cosine = torch.mm(features_gen, features_gen.t())
+        mask = Variable((torch.ones(cosine.size()) - torch.diag(torch.ones(batch_size))).cuda())
+        pt_loss = PT_WEIGHT * torch.sum((cosine * mask) ** 2) / (batch_size * (batch_size + 1))
+        pt_loss.backward()
+        optimizerG.step()
+
+        print('[%d/%d][%d/%d] Loss_FM: %.4f Loss_PT: %.4f Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
               % (epoch, opt.niter, i, len(dataloader),
-                 errD.data[0], errG.data[0], D_x, D_G_z1, D_G_z2))
+                 fm_loss.data[0], pt_loss.data[0], errD.data[0], errG.data[0], D_x, D_G_z1, D_G_z2))
         if i % 100 == 0:
             vutils.save_image(real_cpu,
                     '%s/real_samples.png' % opt.outf,
