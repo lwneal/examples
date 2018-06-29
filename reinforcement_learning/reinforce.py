@@ -29,14 +29,18 @@ class Environment():
     def __init__(self):
         self.our_prev_action = np.zeros(3)
         self.adv_prev_action = np.zeros(3)
+        self.cumulative_actions = np.zeros((2,3), dtype=int)
 
     def reset(self):
         state = np.zeros(6)
+        self.our_prev_action = np.zeros(3)
+        self.adv_prev_action = np.zeros(3)
+        self.cumulative_actions = np.zeros((2,3), dtype=int)
         return state
 
     def adversary_action(self):
         action = np.zeros(3)
-        action[SCISSORS] = 1.0
+        action[PAPER] = 1.0
         return action
 
     def step(self, action):
@@ -48,36 +52,67 @@ class Environment():
         self.our_prev_action[action] = 1
         self.adv_prev_action = self.adversary_action()
 
-        reward = self.get_reward()
+        self.cumulative_actions[0] += self.our_prev_action.astype(int)
+        self.cumulative_actions[1] += self.adv_prev_action.astype(int)
+
+        reward = 0
         done = False
         info = {}
         return state, reward, done, info
 
-    def get_reward(self):
-        our_action = self.our_prev_action
-        adv_action = self.adv_prev_action
-        if our_action.argmax() == ROCK:
-            if adv_action.argmax() == ROCK:
-                return 0
-            elif adv_action.argmax() == PAPER:
-                return -1
-            elif adv_action.argmax() == SCISSORS:
-                return 1
-        elif our_action.argmax() == PAPER:
-            if adv_action.argmax() == ROCK:
-                return 1
-            elif adv_action.argmax() == PAPER:
-                return 0
-            elif adv_action.argmax() == SCISSORS:
-                return -1
-        elif our_action.argmax() == SCISSORS:
-            if adv_action.argmax() == ROCK:
-                return -1
-            elif adv_action.argmax() == PAPER:
-                return 1
-            elif adv_action.argmax() == SCISSORS:
-                return 0
-        assert False
+    def get_reward(self, verbose=False):
+        blue = self.cumulative_actions[0].astype(float)
+        red = self.cumulative_actions[1].astype(float)
+
+        if verbose:
+            print('Modeling battle between {} blue units and {} enemy units'.format(
+                sum(blue), sum(red)))
+            print('Blue: {}'.format(blue))
+            print('Red: {}'.format(red))
+
+        while max(blue) > 0 and max(red) > 0:
+            red_damage = model_battle(blue, red, verbose=False)
+            blue_damage = model_battle(red, blue)
+            red = apply_damage(red, red_damage)
+            blue = apply_damage(blue, blue_damage)
+
+        blue_left = blue.sum()
+        red_left = red.sum()
+        if verbose:
+            print('Battle finished: {:.2f} blue and {:.2f} red units remain'.format(
+                blue_left, red_left))
+        return blue_left - red_left
+
+
+# Model how much damage Blue will do to Red
+def model_battle(blue, red, verbose=False):
+    br, bp, bs = blue
+    if verbose:
+        print('Blue has: {:.02f} rocks, {:.02f} paper, {:.02f} scissors'.format(br, bp, bs))
+    rr, rp, rs = red
+    if verbose:
+        print('Red has: {:.02f} rocks, {:.02f} paper, {:.02f} scissors'.format(rr, rp, rs))
+
+    # All units contribute some amount of damage
+    standard_dps = np.array([1, 1, 1]) * (br + bp + bs + .1)
+
+    # Each unit that counters another applies extra damage to its adversary
+    vs_rock = (rr > 0) * bp
+    vs_paper = (rp > 0) * bs
+    vs_scissors = (rs > 0) * br
+    bonus_dps = np.array([vs_rock, vs_paper, vs_scissors])
+
+    if verbose:
+        print('Blue will do {:.02f} dps vs Red'.format(total_dps))
+    return (standard_dps + bonus_dps) * .01
+
+
+def apply_damage(army, damage):
+    # Subtract damage from all surviving units
+    damage_per_unit = 3.0 / (army > 0).sum()
+    army -= damage * damage_per_unit
+    army = np.clip(army, 0, None)
+    return army
 
 
 env = Environment()
@@ -139,14 +174,15 @@ def main():
         state = env.reset()
         for t in range(10):  # Don't infinite loop while learning
             action = select_action(state)
-            state, reward, done, _ = env.step(action)
-            policy.rewards.append(reward)
+            state, _, done, _ = env.step(action)
+            policy.rewards.append(0)
+        verbose = i_episode % args.log_interval == 0
+        reward = env.get_reward(verbose)
+        policy.rewards[-1] = reward
 
-        average_reward = np.mean(policy.rewards)
         finish_episode()
-        if i_episode % args.log_interval == 0:
-            print('Episode {}\tAverage reward: {:.2f}'.format(
-                i_episode, average_reward))
+        if verbose:
+            print('Episode {}\tReward: {:.2f}'.format(i_episode, reward))
 
 
 if __name__ == '__main__':
