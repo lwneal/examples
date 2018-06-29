@@ -17,6 +17,8 @@ parser.add_argument('--seed', type=int, default=543, metavar='N',
                     help='random seed (default: 543)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='interval between training status logs (default: 10)')
+parser.add_argument('--learning_rate', type=float, default=0.01,
+                    help='learning rate')
 args = parser.parse_args()
 
 
@@ -40,7 +42,7 @@ class Environment():
 
     def adversary_action(self):
         action = np.zeros(3)
-        action[PAPER] = 1.0
+        action[np.random.randint(3)] = 1.0
         return action
 
     def step(self, action):
@@ -124,15 +126,21 @@ class Policy(nn.Module):
     def __init__(self):
         super(Policy, self).__init__()
         self.affine1 = nn.Linear(6, 128)
+        self.gru = nn.GRU(128, 128)
         self.affine2 = nn.Linear(128, 3)
 
+        self.reset_gru()
         self.saved_log_probs = []
         self.rewards = []
 
     def forward(self, x):
         x = F.relu(self.affine1(x))
+        x, self.hx = self.gru(x.unsqueeze(0), self.hx)
         action_scores = self.affine2(x)
         return F.softmax(action_scores, dim=1)
+
+    def reset_gru(self):
+        self.hx = torch.zeros(1, 1, 128)
 
 
 policy = Policy()
@@ -161,9 +169,10 @@ def finish_episode():
     for log_prob, reward in zip(policy.saved_log_probs, rewards):
         policy_loss.append(-log_prob * reward)
     optimizer.zero_grad()
-    policy_loss = torch.cat(policy_loss).sum()
+    policy_loss = torch.cat(policy_loss).sum() * args.learning_rate
     policy_loss.backward()
     optimizer.step()
+    policy.reset_gru()
     del policy.rewards[:]
     del policy.saved_log_probs[:]
 
@@ -172,7 +181,7 @@ def main():
     running_reward = 10
     for i_episode in count(1):
         state = env.reset()
-        for t in range(10):  # Don't infinite loop while learning
+        for t in range(10):
             action = select_action(state)
             state, _, done, _ = env.step(action)
             policy.rewards.append(0)
