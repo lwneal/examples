@@ -15,23 +15,81 @@ parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
                     help='discount factor (default: 0.99)')
 parser.add_argument('--seed', type=int, default=543, metavar='N',
                     help='random seed (default: 543)')
-parser.add_argument('--render', action='store_true',
-                    help='render the environment')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='interval between training status logs (default: 10)')
 args = parser.parse_args()
 
 
-env = gym.make('CartPole-v0')
-env.seed(args.seed)
+ROCK = 0
+PAPER = 1
+SCISSORS = 2
+
+# An implementation of Rock-Paper-Scissors
+class Environment():
+    def __init__(self):
+        self.our_prev_action = np.zeros(3)
+        self.adv_prev_action = np.zeros(3)
+
+    def reset(self):
+        state = np.zeros(6)
+        return state
+
+    def adversary_action(self):
+        action = np.zeros(3)
+        action[SCISSORS] = 1.0
+        return action
+
+    def step(self, action):
+        state = np.zeros(6)
+        state[:3] = self.our_prev_action
+        state[3:] = self.adv_prev_action
+
+        self.our_prev_action = np.zeros(3)
+        self.our_prev_action[action] = 1
+        self.adv_prev_action = self.adversary_action()
+
+        reward = self.get_reward()
+        done = False
+        info = {}
+        return state, reward, done, info
+
+    def get_reward(self):
+        our_action = self.our_prev_action
+        adv_action = self.adv_prev_action
+        if our_action.argmax() == ROCK:
+            if adv_action.argmax() == ROCK:
+                return 0
+            elif adv_action.argmax() == PAPER:
+                return -1
+            elif adv_action.argmax() == SCISSORS:
+                return 1
+        elif our_action.argmax() == PAPER:
+            if adv_action.argmax() == ROCK:
+                return 1
+            elif adv_action.argmax() == PAPER:
+                return 0
+            elif adv_action.argmax() == SCISSORS:
+                return -1
+        elif our_action.argmax() == SCISSORS:
+            if adv_action.argmax() == ROCK:
+                return -1
+            elif adv_action.argmax() == PAPER:
+                return 1
+            elif adv_action.argmax() == SCISSORS:
+                return 0
+        assert False
+
+
+env = Environment()
+
 torch.manual_seed(args.seed)
 
 
 class Policy(nn.Module):
     def __init__(self):
         super(Policy, self).__init__()
-        self.affine1 = nn.Linear(4, 128)
-        self.affine2 = nn.Linear(128, 2)
+        self.affine1 = nn.Linear(6, 128)
+        self.affine2 = nn.Linear(128, 3)
 
         self.saved_log_probs = []
         self.rewards = []
@@ -79,24 +137,16 @@ def main():
     running_reward = 10
     for i_episode in count(1):
         state = env.reset()
-        for t in range(10000):  # Don't infinite loop while learning
+        for t in range(10):  # Don't infinite loop while learning
             action = select_action(state)
             state, reward, done, _ = env.step(action)
-            if args.render:
-                env.render()
             policy.rewards.append(reward)
-            if done:
-                break
 
-        running_reward = running_reward * 0.99 + t * 0.01
+        average_reward = np.mean(policy.rewards)
         finish_episode()
         if i_episode % args.log_interval == 0:
-            print('Episode {}\tLast length: {:5d}\tAverage length: {:.2f}'.format(
-                i_episode, t, running_reward))
-        if running_reward > env.spec.reward_threshold:
-            print("Solved! Running reward is now {} and "
-                  "the last episode runs to {} time steps!".format(running_reward, t))
-            break
+            print('Episode {}\tAverage reward: {:.2f}'.format(
+                i_episode, average_reward))
 
 
 if __name__ == '__main__':
