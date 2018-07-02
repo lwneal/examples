@@ -7,8 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import logutil
 from torch.distributions import Categorical
 
+ts = logutil.TimeSeries('Reinforcement Learning')
 
 parser = argparse.ArgumentParser(description='PyTorch REINFORCE example')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
@@ -17,7 +19,7 @@ parser.add_argument('--seed', type=int, default=543, metavar='N',
                     help='random seed (default: 543)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='interval between training status logs (default: 10)')
-parser.add_argument('--learning_rate', type=float, default=0.01,
+parser.add_argument('--learning_rate', type=float, default=0.001,
                     help='learning rate')
 args = parser.parse_args()
 
@@ -32,17 +34,21 @@ class Environment():
         self.our_prev_action = np.zeros(3)
         self.adv_prev_action = np.zeros(3)
         self.cumulative_actions = np.zeros((2,3), dtype=int)
+        # The adversary picks a strategy: all-in rock, paper, or scissors
+        # Our agent must learn to react to this strategy
+        self.adversary_strategy = np.random.randint(3)
 
     def reset(self):
         state = np.zeros(6)
         self.our_prev_action = np.zeros(3)
         self.adv_prev_action = np.zeros(3)
         self.cumulative_actions = np.zeros((2,3), dtype=int)
+        self.adversary_strategy = np.random.randint(3)
         return state
 
     def adversary_action(self):
         action = np.zeros(3)
-        action[np.random.randint(3)] = 1.0
+        action[self.adversary_strategy] = 1.0
         return action
 
     def step(self, action):
@@ -99,9 +105,9 @@ def model_battle(blue, red, verbose=False):
     standard_dps = np.array([1, 1, 1]) * (br + bp + bs + .1)
 
     # Each unit that counters another applies extra damage to its adversary
-    vs_rock = (rr > 0) * bp
-    vs_paper = (rp > 0) * bs
-    vs_scissors = (rs > 0) * br
+    vs_rock = (rr > 0) * bp * 2.0
+    vs_paper = (rp > 0) * bs * 2.0
+    vs_scissors = (rs > 0) * br * 2.0
     bonus_dps = np.array([vs_rock, vs_paper, vs_scissors])
 
     if verbose:
@@ -180,18 +186,25 @@ def finish_episode():
 def main():
     running_reward = 10
     for i_episode in count(1):
+        #verbose = i_episode % args.log_interval == 0
+        verbose = False
+
         state = env.reset()
         for t in range(10):
             action = select_action(state)
             state, _, done, _ = env.step(action)
             policy.rewards.append(0)
-        verbose = i_episode % args.log_interval == 0
+
         reward = env.get_reward(verbose)
         policy.rewards[-1] = reward
-
         finish_episode()
+
+        ts.collect('reward', reward)
+        ts.print_every(1)
+
         if verbose:
             print('Episode {}\tReward: {:.2f}'.format(i_episode, reward))
+
 
 
 if __name__ == '__main__':
